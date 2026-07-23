@@ -26,6 +26,11 @@ data/memories/
 
 - Every signed-in user has **full control of their own space**
   (`project/<their-username>/…`) in every project and can create projects.
+- The `project/<username>` folder is an **ownership anchor**: its name
+  decides who owns everything beneath it, so non-admins can't rename, move or
+  delete an anchor — not even one shared to them read & write. That stops
+  anyone from injecting memories into (or destroying) another user's
+  namespace. Only admins may reorganize anchors.
 - Nobody else's space is visible **unless shared** — with one user or a
   group, per item or per folder, read-only or read & write.
 - Admins see everything, manage users and are the only ones who create
@@ -52,6 +57,12 @@ data/memories/
 - **Drag & drop** — drop items on a folder card or a breadcrumb ancestor to
   move them.
 - **⋮ menu** on each item — Share…, Rename…, Delete.
+- **File viewer/editor** — opening a `.md` file shows a rendered Markdown
+  **preview** by default; **✏️ Edit raw** toggles to the source textarea to
+  edit and save. The preview uses a small, dependency-free renderer that
+  HTML-escapes the input and sanitises link targets, so memory files authored
+  by other users (via shares) are safe to view. Dialogs close on `Esc` or a
+  click outside.
 - **Live badge** — the explorer subscribes to the current project over SSE
   and refreshes automatically when anyone (human or LLM) changes something.
 
@@ -73,8 +84,10 @@ cd backend && cargo run                  # API + MCP on :8090
 cd frontend && npm install && npm run dev
 ```
 
-`cargo test` runs the unit tests **and the Scriber-contract regression
-tests** (see below).
+`cargo test` runs the unit tests, the **privacy access-control suite**
+(`backend/tests/privacy.rs` — 20 HTTP-level tests that defend the ownership
+anchors, see [Administration](#administration)) **and the Scriber-contract
+regression tests** (see below).
 
 ## Give your LLM access (copy-paste)
 
@@ -213,6 +226,15 @@ changes its API shapes — or our client drifts — these tests fail first.
 - **Settings** (every user): pseudo, e-mail, avatar, password change, and
   **API tokens** (create with read or read & write scope, see last-used
   time, revoke instantly).
+- **Access control** — sharing is per-item or per-folder, read-only or read
+  & write, to a user or a group (group grants stay read-only). The
+  `project/<username>` **ownership anchors** are structurally protected on
+  top of sharing: only admins may rename, move or delete an anchor, so a
+  read-write share can never be escalated into renaming/injecting/destroying
+  another user's namespace. The rules are pure predicates in
+  `backend/src/store.rs` (`is_ownership_anchor`, `can_rename`, `can_delete`,
+  `can_move_source`, `can_place_at`), enforced in `backend/src/api.rs` and
+  pinned by `backend/tests/privacy.rs`.
 
 ## Secrets via Infisical (optional)
 
