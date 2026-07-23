@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::api::{authenticate, ApiError, Authed, SharedState};
 use crate::db::Db;
-use crate::scriber::ScriberClient;
+use crate::scriber::{ScriberClient, ScriberError};
 use crate::store::{clean_path, Access, Store};
 
 const PROTOCOL_VERSION: &str = "2025-03-26";
@@ -155,7 +155,12 @@ async fn call_tool(
             let segs = parse(&path)?;
             let entries = if scriber_path(state, &segs) {
                 let client = state.scriber.as_ref().unwrap();
-                scriber_entries(client, &segs, a).await?
+                let access = if a.can_write() { "readwrite" } else { "read" };
+                client
+                    .mount_entries(&segs, access)
+                    .await
+                    .map_err(|e| format!("scriber: {e}"))?
+                    .ok_or_else(|| "Not found".to_string())?
             } else {
                 if !state.store.visible(&a.user.username, a.user.is_admin, &g, &segs) {
                     return Err("No access to this path".into());
@@ -171,9 +176,10 @@ async fn call_tool(
                         is_dir: true,
                         size: 0,
                         modified_at: None,
-                        access: "readwrite".into(),
+                        access: if a.can_write() { "readwrite" } else { "read" }.into(),
                         shared: false,
                     });
+                    crate::store::sort_entries(&mut list);
                 }
                 list
             };
@@ -182,17 +188,18 @@ async fn call_tool(
         "read_memory" => {
             let segs = parse(&arg_str("path"))?;
             if scriber_path(state, &segs) {
-                if segs.len() != 3 {
-                    return Err("scriber paths look like scriber/<participant>/memory.md".into());
-                }
-                let pid = ScriberClient::participant_id_from_folder(&segs[1]);
+                let file = ScriberClient::classify_file(&segs)
+                    .ok_or_else(|| mount_path_hint(&state.cfg.scriber_mount))?;
                 let content = state
                     .scriber
                     .as_ref()
                     .unwrap()
-                    .read_memory(&pid)
+                    .read_mount_file(&file)
                     .await
-                    .map_err(|e| format!("scriber: {e}"))?;
+                    .map_err(|e| match e {
+                        ScriberError::NotFound => "File not found".to_string(),
+                        ScriberError::Upstream(e) => format!("scriber: {e}"),
+                    })?;
                 return Ok(tool_text(content, false));
             }
             if Store::access_for(&a.user.username, a.user.is_admin, &g, &segs) == Access::None {
@@ -209,17 +216,18 @@ async fn call_tool(
             let segs = parse(&arg_str("path"))?;
             let content = arg_str("content");
             if scriber_path(state, &segs) {
-                if segs.len() != 3 {
-                    return Err("scriber paths look like scriber/<participant>/memory.md".into());
-                }
-                let pid = ScriberClient::participant_id_from_folder(&segs[1]);
+                let file = ScriberClient::classify_file(&segs)
+                    .ok_or_else(|| mount_path_hint(&state.cfg.scriber_mount))?;
                 state
                     .scriber
                     .as_ref()
                     .unwrap()
-                    .write_memory(&pid, &content)
+                    .write_mount_file(&file, &content)
                     .await
-                    .map_err(|e| format!("scriber: {e}"))?;
+                    .map_err(|e| match e {
+                        ScriberError::NotFound => "File not found".to_string(),
+                        ScriberError::Upstream(e) => format!("scriber: {e}"),
+                    })?;
                 record_event(state, "updated", &segs, &a.user.username);
                 return Ok(tool_text("written".into(), false));
             }
@@ -349,42 +357,8 @@ fn scriber_path(state: &SharedState, segs: &[String]) -> bool {
     state.scriber.is_some() && !segs.is_empty() && segs[0] == state.cfg.scriber_mount
 }
 
-async fn scriber_entries(
-    client: &ScriberClient,
-    segs: &[String],
-    a: &Authed,
-) -> Result<Vec<crate::store::Entry>, String> {
-    let access = if a.can_write() { "readwrite" } else { "read" };
-    match segs.len() {
-        1 => Ok(client
-            .participants()
-            .await
-            .map_err(|e| format!("scriber: {e}"))?
-            .iter()
-            .map(|p| {
-                let name = ScriberClient::folder_name(p);
-                crate::store::Entry {
-                    path: format!("{}/{}", segs[0], name),
-                    name,
-                    is_dir: true,
-                    size: 0,
-                    modified_at: None,
-                    access: access.into(),
-                    shared: false,
-                }
-            })
-            .collect()),
-        2 => Ok(vec![crate::store::Entry {
-            name: "memory.md".into(),
-            path: format!("{}/{}/memory.md", segs[0], segs[1]),
-            is_dir: false,
-            size: 0,
-            modified_at: None,
-            access: access.into(),
-            shared: false,
-        }]),
-        _ => Err("Not found".into()),
-    }
+fn mount_path_hint(mount: &str) -> String {
+    format!("{mount} paths look like {mount}/<participant>/memory.md or {mount}/meetings/<meeting>.md")
 }
 
 fn record_event(state: &SharedState, kind: &str, segs: &[String], actor: &str) {

@@ -20,8 +20,8 @@ use crate::config::Config;
 use crate::db::{Db, User};
 use crate::events::EventHub;
 use crate::mail;
-use crate::scriber::ScriberClient;
-use crate::store::{clean_path, Access, Entry, Store};
+use crate::scriber::{ScriberClient, ScriberError};
+use crate::store::{clean_path, sort_entries, Access, Entry, Store};
 
 pub struct AppState {
     pub cfg: Config,
@@ -736,9 +736,7 @@ async fn fs_list(
                 shared: false,
             });
             let _ = client; // client used above for presence only
-            entries.sort_by(|x, y| {
-                (!x.is_dir, x.name.to_lowercase()).cmp(&(!y.is_dir, y.name.to_lowercase()))
-            });
+            sort_entries(&mut entries);
         }
     }
     Ok(Json(json!({ "path": segs.join("/"), "entries": entries })))
@@ -750,39 +748,11 @@ async fn scriber_list(
     a: &Authed,
 ) -> Result<Vec<Entry>, ApiError> {
     let access = if a.can_write() { "readwrite" } else { "read" };
-    match segs.len() {
-        1 => {
-            let participants = client
-                .participants()
-                .await
-                .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("scriber: {e}")))?;
-            Ok(participants
-                .iter()
-                .map(|p| {
-                    let name = ScriberClient::folder_name(p);
-                    Entry {
-                        path: format!("{}/{}", segs[0], name),
-                        name,
-                        is_dir: true,
-                        size: 0,
-                        modified_at: None,
-                        access: access.into(),
-                        shared: false,
-                    }
-                })
-                .collect())
-        }
-        2 => Ok(vec![Entry {
-            name: "memory.md".into(),
-            path: format!("{}/{}/memory.md", segs[0], segs[1]),
-            is_dir: false,
-            size: 0,
-            modified_at: None,
-            access: access.into(),
-            shared: false,
-        }]),
-        _ => Err(err(StatusCode::NOT_FOUND, "Not found")),
-    }
+    client
+        .mount_entries(segs, access)
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("scriber: {e}")))?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Not found"))
 }
 
 async fn fs_read(
@@ -796,17 +766,18 @@ async fn fs_read(
         return Err(err(StatusCode::BAD_REQUEST, "Missing path"));
     }
     if is_scriber(&state, &segs) {
-        if segs.len() != 3 || segs[2] != "memory.md" {
-            return Err(err(StatusCode::NOT_FOUND, "Not found"));
-        }
-        let id = ScriberClient::participant_id_from_folder(&segs[1]);
+        let file = ScriberClient::classify_file(&segs)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "Not found"))?;
         let content = state
             .scriber
             .as_ref()
             .unwrap()
-            .read_memory(&id)
+            .read_mount_file(&file)
             .await
-            .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("scriber: {e}")))?;
+            .map_err(|e| match e {
+                ScriberError::NotFound => err(StatusCode::NOT_FOUND, "File not found"),
+                ScriberError::Upstream(e) => err(StatusCode::BAD_GATEWAY, &format!("scriber: {e}")),
+            })?;
         return Ok(Json(json!({ "path": segs.join("/"), "content": content })));
     }
     let g = grants(&state, &a);
@@ -838,17 +809,25 @@ async fn fs_write(
         return Err(err(StatusCode::BAD_REQUEST, "Files live inside a project"));
     }
     if is_scriber(&state, &segs) {
-        if segs.len() != 3 || segs[2] != "memory.md" {
-            return Err(err(StatusCode::BAD_REQUEST, "Only memory.md can be written in scriber"));
-        }
-        let id = ScriberClient::participant_id_from_folder(&segs[1]);
+        let file = ScriberClient::classify_file(&segs).ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "Only memory.md and meeting summary files can be written in {}",
+                    state.cfg.scriber_mount
+                ),
+            )
+        })?;
         state
             .scriber
             .as_ref()
             .unwrap()
-            .write_memory(&id, &body.content)
+            .write_mount_file(&file, &body.content)
             .await
-            .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("scriber: {e}")))?;
+            .map_err(|e| match e {
+                ScriberError::NotFound => err(StatusCode::NOT_FOUND, "File not found"),
+                ScriberError::Upstream(e) => err(StatusCode::BAD_GATEWAY, &format!("scriber: {e}")),
+            })?;
         record(&state, "updated", &segs, None, &a.user.username);
         return Ok(Json(json!({ "ok": true })));
     }

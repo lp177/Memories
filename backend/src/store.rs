@@ -32,6 +32,12 @@ pub struct Entry {
     pub shared: bool,
 }
 
+/// Explorer ordering: folders first, then files, each group in ascending
+/// ASCII (byte) name order.
+pub fn sort_entries(entries: &mut [Entry]) {
+    entries.sort_by(|a, b| (!a.is_dir, a.name.as_bytes()).cmp(&(!b.is_dir, b.name.as_bytes())));
+}
+
 pub struct Store {
     root: PathBuf,
 }
@@ -200,7 +206,7 @@ impl Store {
                 shared,
             });
         }
-        out.sort_by(|a, b| (!a.is_dir, a.name.to_lowercase()).cmp(&(!b.is_dir, b.name.to_lowercase())));
+        sort_entries(&mut out);
         Ok(out)
     }
 
@@ -279,6 +285,25 @@ fn copy_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entries_sort_folders_first_then_ascii() {
+        let e = |name: &str, is_dir: bool| Entry {
+            name: name.into(),
+            path: name.into(),
+            is_dir,
+            size: 0,
+            modified_at: None,
+            access: "readwrite".into(),
+            shared: false,
+        };
+        let mut v = vec![e("b.md", false), e("a", true), e("Z.md", false), e("A", true), e("1", true)];
+        sort_entries(&mut v);
+        let names: Vec<_> = v.iter().map(|x| x.name.as_str()).collect();
+        // Folders first, then files; each group in ASCII order (digits <
+        // uppercase < lowercase).
+        assert_eq!(names, ["1", "A", "a", "Z.md", "b.md"]);
+    }
 
     #[test]
     fn clean_path_rules() {

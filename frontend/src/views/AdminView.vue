@@ -171,29 +171,24 @@ onMounted(load);
         </div>
       </div>
 
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Pseudo</th>
-              <th scope="col">E-mail</th>
-              <th scope="col">Role</th>
-              <th scope="col"><span class="visually-hidden">Actions</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="u in users" :key="u.id">
-              <td style="font-weight: 600">{{ u.username }}</td>
-              <td class="muted">{{ u.email || "—" }}</td>
-              <td><span v-if="u.is_admin" class="chip admin">admin</span><span v-else class="muted">user</span></td>
-              <td style="white-space: nowrap">
-                <button type="button" class="btn ghost small" @click="editUser(u)">Edit</button>
-                <button type="button" class="btn ghost small" @click="sendReset(u)">Reset password</button>
-                <button type="button" class="btn danger-btn small" @click="removeUser(u)">Delete</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="list" role="table" aria-label="Users">
+        <div class="list-head" role="row">
+          <span role="columnheader" style="flex: 0 0 150px">Pseudo</span>
+          <span role="columnheader" class="grow">E-mail</span>
+          <span role="columnheader" style="flex: 0 0 70px">Role</span>
+        </div>
+        <div v-for="u in users" :key="u.id" class="list-row" role="row">
+          <span role="cell" style="flex: 0 0 150px; font-weight: 600">{{ u.username }}</span>
+          <span role="cell" class="grow muted">{{ u.email || "—" }}</span>
+          <span role="cell" style="flex: 0 0 70px">
+            <span v-if="u.is_admin" class="chip admin">admin</span><span v-else class="muted">user</span>
+          </span>
+          <span role="cell" class="btn-group">
+            <button type="button" class="btn ghost small" @click="editUser(u)">Edit</button>
+            <button type="button" class="btn ghost small" @click="sendReset(u)">Reset password</button>
+            <button type="button" class="btn danger-btn small" @click="removeUser(u)">Delete</button>
+          </span>
+        </div>
       </div>
     </section>
 
@@ -207,28 +202,21 @@ onMounted(load);
         Users have no group by default — only admins create groups and assign members. Groups can be
         used as share targets in the explorer.
       </p>
-      <div v-if="groups.length" class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Members</th>
-              <th scope="col"><span class="visually-hidden">Actions</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="g in groups" :key="g.id">
-              <td style="font-weight: 600">{{ g.name }}</td>
-              <td class="muted">
-                {{ g.members.length ? g.members.map(usernameOf).join(", ") : "no members" }}
-              </td>
-              <td style="white-space: nowrap">
-                <button type="button" class="btn ghost small" @click="editGroup(g)">Edit</button>
-                <button type="button" class="btn danger-btn small" @click="removeGroup(g)">Delete</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-if="groups.length" class="list" role="table" aria-label="Groups">
+        <div class="list-head" role="row">
+          <span role="columnheader" style="flex: 0 0 150px">Name</span>
+          <span role="columnheader" class="grow">Members</span>
+        </div>
+        <div v-for="g in groups" :key="g.id" class="list-row" role="row">
+          <span role="cell" style="flex: 0 0 150px; font-weight: 600">{{ g.name }}</span>
+          <span role="cell" class="grow muted">
+            {{ g.members.length ? g.members.map(usernameOf).join(", ") : "no members" }}
+          </span>
+          <span role="cell" class="btn-group">
+            <button type="button" class="btn ghost small" @click="editGroup(g)">Edit</button>
+            <button type="button" class="btn danger-btn small" @click="removeGroup(g)">Delete</button>
+          </span>
+        </div>
       </div>
       <p v-else class="muted">No groups yet.</p>
     </section>

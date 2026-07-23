@@ -34,9 +34,19 @@ data/memories/
 
 ## The explorer
 
+- **Single click opens** — one click (or tap) opens a folder or a file.
+- **Ordering** — folders first, then files; each group ascending by name in
+  ASCII order. Toolbar toggles switch to most-recent-edit order and reverse
+  the direction (remembered per browser).
+- **Filter** — the toolbar input live-filters the current folder by name
+  (substring, 0.5 s debounce, paste-friendly); the inner ✕ clears it. The
+  filter resets when you navigate.
 - **Breadcrumb** — every ancestor is clickable (and a drag & drop target).
 - **Rubber-band selection** — hold the left mouse button on empty space and
-  draw; the translucent rectangle live-selects what it touches.
+  draw; the translucent rectangle live-selects what it touches. `Ctrl+click`
+  toggles single items.
+- **Touch selection** — long-press a card to enter selection mode, then tap
+  to toggle more items (the ⋮ menu stays visible on touch screens).
 - **Keyboard** — `Del` deletes the selection (a floating action bar also
   appears), `Ctrl+C/X/V` copy/cut/paste, `Ctrl+A` select all, `Esc` clears.
 - **Drag & drop** — drop items on a folder card or a breadcrumb ancestor to
@@ -154,7 +164,9 @@ sequential per-project event log and broadcast over SSE:
 Memories can **mount an external memory source as a virtual project**. The
 built-in provider mounts a [Scriber](https://github.com/lp177/Scriber)
 instance: each meeting participant appears as a folder holding `memory.md`,
-readable and writable from the explorer, API and MCP.
+and a `meetings` folder holds one Markdown file per summarized meeting (the
+AI-generated minutes) — all readable and writable from the explorer, API and
+MCP.
 
 ```ini
 # .env
@@ -165,18 +177,24 @@ SCRIBER_MOUNT=scriber
 
 ### The provider contract
 
-Any service can be integrated the same way by exposing these three
-endpoints, authenticated with `Authorization: Bearer <token>` (readwrite
-scope required for the PUT):
+Any service can be integrated the same way by exposing these endpoints,
+authenticated with `Authorization: Bearer <token>` (readwrite scope required
+for the PUTs):
 
 | Endpoint | Response |
 | --- | --- |
 | `GET /api/v1/participants?limit=&offset=` | `{"total": N, "items": [{"id", "display_name"}]}` |
 | `GET /api/v1/participants/{id}/memory` | `{"content": "<markdown>"}` |
 | `PUT /api/v1/participants/{id}/memory` `{"content"}` | `{"ok": true}` |
+| `GET /api/v1/meetings?limit=&offset=` | `{"total": N, "items": [{"id", "started_at", "voice_channel_name", "guild_name", "has_summary"}]}` |
+| `GET /api/v1/meetings/{id}/summary` | the minutes as raw `text/markdown` (not JSON) |
+| `PUT /api/v1/meetings/{id}/summary` `{"content"}` | `{"ok": true}` |
 
 Unknown/missing tokens must yield **401**. Additional item fields are
-ignored; `display_name` may be null (the id is shown instead).
+ignored; `display_name` may be null (the id is shown instead). Only meetings
+with `has_summary: true` are listed in the `meetings` folder. `meetings` is
+a **reserved name** at the mount root (a participant with that literal id
+gets a decorated folder label instead).
 
 ### Regression tests
 

@@ -221,29 +221,24 @@ onMounted(load);
         </div>
       </div>
 
-      <div v-if="tokens.length" class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Token</th>
-              <th scope="col">Scope</th>
-              <th scope="col">Last used</th>
-              <th scope="col"><span class="visually-hidden">Actions</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="t in tokens" :key="t.id">
-              <td style="font-weight: 600">{{ t.name }}</td>
-              <td><code>{{ t.token_prefix }}…</code></td>
-              <td><span class="chip" :class="t.scope === 'readwrite' ? 'rw' : 'ro'">{{ t.scope }}</span></td>
-              <td class="muted">{{ fmtDate(t.last_used_at) }}</td>
-              <td>
-                <button type="button" class="btn danger-btn small" @click="removeToken(t)">Delete</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-if="tokens.length" class="list" role="table" aria-label="API tokens">
+        <div class="list-head" role="row">
+          <span role="columnheader" style="flex: 0 0 140px">Name</span>
+          <span role="columnheader" style="flex: 0 0 110px">Token</span>
+          <span role="columnheader" style="flex: 0 0 90px">Scope</span>
+          <span role="columnheader" class="grow">Last used</span>
+        </div>
+        <div v-for="t in tokens" :key="t.id" class="list-row" role="row">
+          <span role="cell" style="flex: 0 0 140px; font-weight: 600">{{ t.name }}</span>
+          <span role="cell" style="flex: 0 0 110px"><code>{{ t.token_prefix }}…</code></span>
+          <span role="cell" style="flex: 0 0 90px">
+            <span class="chip" :class="t.scope === 'readwrite' ? 'rw' : 'ro'">{{ t.scope }}</span>
+          </span>
+          <span role="cell" class="grow muted">{{ fmtDate(t.last_used_at) }}</span>
+          <span role="cell" class="btn-group">
+            <button type="button" class="btn danger-btn small" @click="removeToken(t)">Delete</button>
+          </span>
+        </div>
       </div>
       <p v-else class="muted">No API tokens yet — create one above.</p>
     </section>

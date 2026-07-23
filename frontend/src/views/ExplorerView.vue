@@ -1,8 +1,9 @@
 <script setup>
-// File-system explorer: breadcrumb navigation, rubber-band multi-select,
-// keyboard (Delete, Ctrl+C/X/V), drag & drop, per-item three-dot menu
-// (share / rename / delete), a markdown editor dialog, and live updates via
-// SSE for the current project.
+// File-system explorer: breadcrumb navigation, single click (or tap) opens,
+// multi-select via rubber-band (mouse), Ctrl+click, or touch long-press
+// (selection mode: taps toggle), keyboard (Delete, Ctrl+C/X/V), drag & drop,
+// per-item three-dot menu (share / rename / delete), a markdown editor
+// dialog, and live updates via SSE for the current project.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
@@ -75,7 +76,14 @@ function goTo(path) {
   router.push(`/x/${path}`);
 }
 
+// Re-entry guard: the second click of a habitual double-click would land on
+// whatever card occupies the same grid cell after the navigation re-render.
+let lastOpenAt = 0;
+
 function openEntry(entry) {
+  const now = Date.now();
+  if (now - lastOpenAt < 400) return;
+  lastOpenAt = now;
   if (entry.is_dir) {
     goTo(entry.path);
   } else {
@@ -88,8 +96,73 @@ watch(currentPath, () => {
   const descending = depth > prevDepth;
   prevDepth = depth;
   clearSelection();
+  clearFilter();
   closeMenu();
   load({ autoDescend: descending });
+});
+
+// ---- view options: sort + filter ------------------------------------------
+
+const sortKey = ref(localStorage.getItem("memories_sort_key") || "name"); // "name" | "edited"
+const sortDesc = ref(localStorage.getItem("memories_sort_dir") === "desc");
+const filterInput = ref("");
+const filterQuery = ref("");
+const filterEl = ref(null);
+let filterTimer = null;
+
+function toggleSortKey() {
+  sortKey.value = sortKey.value === "name" ? "edited" : "name";
+  localStorage.setItem("memories_sort_key", sortKey.value);
+}
+
+function toggleSortDir() {
+  sortDesc.value = !sortDesc.value;
+  localStorage.setItem("memories_sort_dir", sortDesc.value ? "desc" : "asc");
+}
+
+// Debounce: apply the filter only after 0.5s without changes. v-model reacts
+// to the `input` event, so typing, right-click paste and drag-drop into the
+// field all funnel through this watcher.
+watch(filterInput, (value) => {
+  if (filterTimer) window.clearTimeout(filterTimer);
+  filterTimer = window.setTimeout(() => (filterQuery.value = value), 500);
+});
+
+function clearFilter(refocus = false) {
+  if (filterTimer) window.clearTimeout(filterTimer);
+  filterTimer = null;
+  filterInput.value = "";
+  filterQuery.value = "";
+  if (refocus) filterEl.value?.focus();
+}
+
+// What the grid shows: current folder entries, filtered by name substring,
+// folders always first, each group sorted by the chosen key + direction.
+const displayed = computed(() => {
+  const q = filterQuery.value.trim().toLowerCase();
+  const list = q
+    ? entries.value.filter((e) => e.name.toLowerCase().includes(q))
+    : entries.value.slice();
+  const dir = sortDesc.value ? -1 : 1;
+  const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  list.sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    const cmp =
+      sortKey.value === "edited"
+        ? (Date.parse(a.modified_at) || 0) - (Date.parse(b.modified_at) || 0)
+        : byName(a, b);
+    // Tiebreak stays ascending by name even in descending order.
+    return dir * cmp || byName(a, b);
+  });
+  return list;
+});
+
+// Applying a filter prunes the selection to what stays visible, so bulk
+// actions never touch hidden items.
+watch(filterQuery, () => {
+  if (!selected.value.size) return;
+  const visible = new Set(displayed.value.map((e) => e.path));
+  selected.value = new Set([...selected.value].filter((p) => visible.has(p)));
 });
 
 // ---- live updates (SSE) ---------------------------------------------------
@@ -138,15 +211,75 @@ function setSelection(paths) {
   selected.value = new Set(paths);
 }
 
+function togglePath(path) {
+  const next = new Set(selected.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  selected.value = next;
+}
+
+// A single click (or tap) opens; selecting is Ctrl+click, the rubber band,
+// or — on touch — a long-press that enters selection mode (taps then toggle).
 function cardClick(entry, event) {
-  if (event.ctrlKey || event.metaKey) {
-    const next = new Set(selected.value);
-    if (next.has(entry.path)) next.delete(entry.path);
-    else next.add(entry.path);
-    selected.value = next;
-  } else {
-    setSelection([entry.path]);
+  if (suppressClick) {
+    suppressClick = false;
+    return;
   }
+  if (event.ctrlKey || event.metaKey || selectMode.value) {
+    togglePath(entry.path);
+  } else {
+    openEntry(entry);
+  }
+}
+
+// ---- touch long-press -> selection mode -----------------------------------
+
+const selectMode = ref(false);
+let pressTimer = null;
+let pressStartPos = null;
+let pressPointerType = "mouse";
+let suppressClick = false;
+
+// Dropping the last selected item also leaves selection mode.
+watch(selected, (s) => {
+  if (!s.size) selectMode.value = false;
+});
+
+function pressStart(entry, event) {
+  pressCancel();
+  suppressClick = false;
+  pressPointerType = event.pointerType || "mouse";
+  // Native drag & drop stays a mouse feature: on touch a held draggable
+  // would start an OS drag and swallow the long-press.
+  event.currentTarget.draggable = pressPointerType === "mouse";
+  if (pressPointerType === "mouse") return;
+  if (event.target.closest(".menu-btn")) return;
+  pressStartPos = { x: event.clientX, y: event.clientY };
+  pressTimer = window.setTimeout(() => {
+    pressTimer = null;
+    suppressClick = true; // swallow the click that follows the release
+    selectMode.value = true;
+    const next = new Set(selected.value);
+    next.add(entry.path);
+    selected.value = next;
+    navigator.vibrate?.(15);
+  }, 450);
+}
+
+function pressMove(event) {
+  if (!pressTimer || !pressStartPos) return;
+  const moved =
+    Math.abs(event.clientX - pressStartPos.x) > 10 ||
+    Math.abs(event.clientY - pressStartPos.y) > 10;
+  if (moved) pressCancel();
+}
+
+function pressCancel() {
+  if (pressTimer) {
+    window.clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+  pressStartPos = null;
 }
 
 // Rubber-band: mousedown on the explorer background starts a selection rect.
@@ -264,7 +397,7 @@ function onKeydown(event) {
     doPaste();
   } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
     event.preventDefault();
-    setSelection(entries.value.map((e) => e.path));
+    setSelection(displayed.value.map((e) => e.path));
   } else if (event.key === "Escape") {
     clearSelection();
     closeMenu();
@@ -325,7 +458,11 @@ const menu = ref(null); // { entry, x, y }
 function openMenu(entry, event) {
   event.stopPropagation();
   const r = event.currentTarget.getBoundingClientRect();
-  menu.value = { entry, x: Math.min(r.left, window.innerWidth - 200), y: r.bottom + 4 };
+  menu.value = {
+    entry,
+    x: Math.min(r.left, window.innerWidth - 200),
+    y: Math.min(r.bottom + 4, window.innerHeight - 160),
+  };
 }
 function closeMenu() {
   menu.value = null;
@@ -462,6 +599,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubscribe();
+  pressCancel();
+  if (filterTimer) window.clearTimeout(filterTimer);
   window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("click", closeMenu);
   window.removeEventListener("mousemove", bandMove);
@@ -498,13 +637,48 @@ onBeforeUnmount(() => {
         <span v-if="live" class="chip rw" style="margin-left: 10px" title="Live updates connected">● live</span>
       </nav>
       <div class="panel-head-actions">
-        <button v-if="clipboard" type="button" class="btn ghost small" @click="doPaste">
-          📋 Paste ({{ clipboard.paths.length }})
-        </button>
-        <button v-if="segments.length" type="button" class="btn ghost small" @click="newFile">+ File</button>
-        <button type="button" class="btn primary small" @click="newFolder">
-          {{ segments.length ? "+ Folder" : "+ Project" }}
-        </button>
+        <div class="btn-group">
+          <div class="filter-wrap">
+            <input
+              ref="filterEl"
+              v-model="filterInput"
+              type="text"
+              class="filter-input"
+              placeholder="Filter…"
+              aria-label="Filter items in this folder"
+              @keydown.esc.stop="clearFilter(true)"
+            />
+            <button
+              v-if="filterInput"
+              type="button"
+              class="icon-btn small filter-clear"
+              aria-label="Clear filter"
+              @click="clearFilter(true)"
+            >✕</button>
+          </div>
+          <button
+            type="button"
+            class="btn ghost small"
+            :title="sortKey === 'name' ? 'Sorted by name — switch to last edit' : 'Sorted by last edit — switch to name'"
+            @click="toggleSortKey"
+          >{{ sortKey === "name" ? "🔤 Name" : "🕒 Edited" }}</button>
+          <button
+            type="button"
+            class="icon-btn small"
+            :title="sortDesc ? 'Descending — switch to ascending' : 'Ascending — switch to descending'"
+            :aria-label="sortDesc ? 'Sort descending' : 'Sort ascending'"
+            @click="toggleSortDir"
+          >{{ sortDesc ? "↓" : "↑" }}</button>
+        </div>
+        <div class="btn-group">
+          <button v-if="clipboard" type="button" class="btn ghost small" @click="doPaste">
+            📋 Paste ({{ clipboard.paths.length }})
+          </button>
+          <button v-if="segments.length" type="button" class="btn ghost small" @click="newFile">+ File</button>
+          <button type="button" class="btn primary small" @click="newFolder">
+            {{ segments.length ? "+ Folder" : "+ Project" }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -517,9 +691,13 @@ onBeforeUnmount(() => {
         <p style="font-size: 34px; margin: 0 0 8px">🗂️</p>
         <p>{{ segments.length ? "This folder is empty." : "No projects yet — create one!" }}</p>
       </div>
+      <div v-else-if="!displayed.length" class="empty-dir">
+        <p style="font-size: 34px; margin: 0 0 8px">🔍</p>
+        <p>Nothing here matches “{{ filterQuery }}”.</p>
+      </div>
       <div v-else class="file-grid">
         <div
-          v-for="entry in entries"
+          v-for="entry in displayed"
           :key="entry.path"
           class="file-card"
           :class="{
@@ -532,7 +710,11 @@ onBeforeUnmount(() => {
           draggable="true"
           @mousedown.stop
           @click.stop="cardClick(entry, $event)"
-          @dblclick.stop="openEntry(entry)"
+          @pointerdown="pressStart(entry, $event)"
+          @pointermove="pressMove"
+          @pointerup="pressCancel"
+          @pointercancel="pressCancel"
+          @contextmenu="pressPointerType !== 'mouse' && $event.preventDefault()"
           @dragstart="dragStart(entry, $event)"
           @dragover="dragOver(entry, $event)"
           @dragleave="dragLeave"
@@ -547,7 +729,6 @@ onBeforeUnmount(() => {
             class="icon-btn small menu-btn"
             aria-label="Item menu"
             @click.stop="openMenu(entry, $event)"
-            @dblclick.stop
             @mousedown.stop
           >⋮</button>
           <span class="f-icon">{{ entry.is_dir ? (segments.length === 0 ? "🗂️" : "📁") : "📄" }}</span>
