@@ -9,6 +9,7 @@
 #   INFISICAL_PROJECT_ID    project holding the secrets
 # Optional:
 #   INFISICAL_ENV           environment slug (default: prod)
+#   INFISICAL_SECRET_PATH   folder to inject from (default: /)
 set -eu
 
 if [ -n "${INFISICAL_CLIENT_ID:-}" ] && [ -n "${INFISICAL_CLIENT_SECRET:-}" ] \
@@ -25,6 +26,7 @@ if [ -n "${INFISICAL_CLIENT_ID:-}" ] && [ -n "${INFISICAL_CLIENT_SECRET:-}" ] \
   exec infisical run \
     --projectId="$INFISICAL_PROJECT_ID" \
     --env="${INFISICAL_ENV:-prod}" \
+    --path="${INFISICAL_SECRET_PATH:-/}" \
     -- "$@"
 fi
 

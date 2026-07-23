@@ -231,6 +231,7 @@ at startup with a **Universal Auth machine identity** and inject them via
 | `WEB_SECRET` | *(empty)* | HMAC key for sessions — set it in production |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `change-me` | bootstrap admin (first run) |
 | `MEMORIES_DATA_DIR` | `./data` (`/data` in container) | markdown tree + SQLite + avatars |
+| `INFISICAL_API_URL/CLIENT_ID/CLIENT_SECRET/PROJECT_ID/ENV/SECRET_PATH` | *(unset)* | fetch secrets from Infisical at start (see above) |
 | `SMTP_HOST/PORT/USERNAME/PASSWORD/FROM` | *(unset)* | reset-mail delivery (optional) |
 | `SCRIBER_URL` / `SCRIBER_TOKEN` / `SCRIBER_MOUNT` | *(unset)* / `scriber` | external Scriber provider |
 
