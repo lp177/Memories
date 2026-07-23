@@ -1,0 +1,12 @@
+# Runtime data (markdown memories, SQLite metadata, avatars)
+data/
+
+# Local configuration with secrets
+.env
+
+# Rust
+backend/target/
+
+# Node / frontend build output
+node_modules/
+frontend/dist/
