@@ -21,6 +21,8 @@ import {
   sharesDelete,
   sharesList,
 } from "../api.js";
+import { renderMarkdown } from "../markdown.js";
+import { modalBackdropClose, modalPress } from "../modal.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -508,14 +510,30 @@ function renameItem(entry) {
   promptName("Rename", entry.name, (v) => fsRename(entry.path, v));
 }
 
-// Markdown editor.
-const editor = ref(null); // { path, name, content, saving }
+// Markdown editor. `mode` is "preview" (rendered, read-only) or "raw" (the
+// editable textarea); preview is the default because it is far more readable.
+const editor = ref(null); // { path, name, content, saving, mode }
 const editorEl = ref(null);
+
+const editorHtml = computed(() =>
+  editor.value ? renderMarkdown(editor.value.content) : "",
+);
+
+function toggleEditorMode() {
+  if (!editor.value) return;
+  editor.value.mode = editor.value.mode === "preview" ? "raw" : "preview";
+}
 
 async function openEditor(entry) {
   try {
     const data = await fsRead(entry.path);
-    editor.value = { path: entry.path, name: entry.name, content: data.content, saving: false };
+    editor.value = {
+      path: entry.path,
+      name: entry.name,
+      content: data.content,
+      saving: false,
+      mode: "preview",
+    };
     nextTick(() => editorEl.value?.showModal());
   } catch (e) {
     showToast((e && e.message) || "Failed to open the file.", "error");
@@ -762,7 +780,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Name dialog (new folder / file / rename) -->
-    <dialog ref="nameDialogEl" class="mdl" @close="nameDialog = null">
+    <dialog ref="nameDialogEl" class="mdl" @mousedown="modalPress" @click="modalBackdropClose" @close="nameDialog = null">
       <form v-if="nameDialog" @submit.prevent="nameSubmit">
         <div class="mdl-head"><h2>{{ nameDialog.title }}</h2></div>
         <div class="mdl-body">
@@ -776,14 +794,30 @@ onBeforeUnmount(() => {
     </dialog>
 
     <!-- Markdown editor -->
-    <dialog ref="editorEl" class="mdl wide" @close="editor = null">
+    <dialog ref="editorEl" class="mdl wide" @mousedown="modalPress" @click="modalBackdropClose" @close="editor = null">
       <div v-if="editor">
         <div class="mdl-head">
-          <h2>{{ editor.name }}</h2>
-          <span class="muted" style="font-size: 12.5px">{{ editor.path }}</span>
+          <div class="mdl-head-title">
+            <h2>{{ editor.name }}</h2>
+            <span class="muted" style="font-size: 12.5px">{{ editor.path }}</span>
+          </div>
+          <button
+            type="button"
+            class="btn ghost small"
+            :title="editor.mode === 'preview' ? 'Editing the raw markdown' : 'Rendered markdown preview'"
+            @click="toggleEditorMode"
+          >{{ editor.mode === "preview" ? "✏️ Edit raw" : "👁 Preview" }}</button>
         </div>
         <div class="mdl-body">
-          <textarea v-model="editor.content" class="code-editor" rows="18" aria-label="File content"></textarea>
+          <textarea
+            v-if="editor.mode === 'raw'"
+            v-model="editor.content"
+            class="code-editor"
+            rows="18"
+            aria-label="File content"
+          ></textarea>
+          <!-- Rendered from sanitised, HTML-escaped markdown (see markdown.js). -->
+          <div v-else class="md-preview" v-html="editorHtml"></div>
         </div>
         <div class="mdl-actions">
           <button type="button" class="btn ghost" @click="editorEl.close()">Close</button>
@@ -795,7 +829,7 @@ onBeforeUnmount(() => {
     </dialog>
 
     <!-- Share dialog -->
-    <dialog ref="shareEl" class="mdl" @close="share = null">
+    <dialog ref="shareEl" class="mdl" @mousedown="modalPress" @click="modalBackdropClose" @close="share = null">
       <div v-if="share">
         <div class="mdl-head"><h2>Share “{{ share.entry.name }}”</h2></div>
         <div class="mdl-body">

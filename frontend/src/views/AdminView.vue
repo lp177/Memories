@@ -13,6 +13,7 @@ import {
   adminUpdateUser,
   adminUsers,
 } from "../api.js";
+import { modalBackdropClose, modalPress } from "../modal.js";
 
 const users = ref([]);
 const groups = ref([]);
@@ -222,7 +223,7 @@ onMounted(load);
     </section>
 
     <!-- User dialog -->
-    <dialog ref="userDialogEl" class="mdl" @close="userDraft = null">
+    <dialog ref="userDialogEl" class="mdl" @mousedown="modalPress" @click="modalBackdropClose" @close="userDraft = null">
       <form v-if="userDraft" @submit.prevent="saveUser">
         <div class="mdl-head"><h2>{{ userDraft.id ? "Edit user" : "New user" }}</h2></div>
         <div class="mdl-body">
@@ -251,7 +252,7 @@ onMounted(load);
     </dialog>
 
     <!-- Group dialog -->
-    <dialog ref="groupDialogEl" class="mdl" @close="groupDraft = null">
+    <dialog ref="groupDialogEl" class="mdl" @mousedown="modalPress" @click="modalBackdropClose" @close="groupDraft = null">
       <form v-if="groupDraft" @submit.prevent="saveGroup">
         <div class="mdl-head"><h2>{{ groupDraft.id ? "Edit group" : "New group" }}</h2></div>
         <div class="mdl-body">

@@ -119,6 +119,81 @@ impl Store {
         best
     }
 
+    // ---- ownership-anchor policy ------------------------------------------
+    //
+    // The depth-2 folder `<project>/<username>` is an *ownership anchor*: its
+    // second segment names the user who owns every memory beneath it. Renaming
+    // that folder, moving it, or materialising one under a different username
+    // reassigns ownership — which is exactly how a non-admin could inject
+    // memory into (or tear down) another user's space. `access_for` alone does
+    // not defend this: it grants a user ReadWrite on their own anchor, so a
+    // plain write-permission check would happily let them rename it away. These
+    // predicates add the missing structural rules and are the privacy deploy
+    // gate — the integration suite exercises the same decisions over HTTP.
+
+    /// True when `segs` points at an ownership anchor (`<project>/<username>`).
+    pub fn is_ownership_anchor(segs: &[String]) -> bool {
+        segs.len() == 2
+    }
+
+    /// Whether `username` may rename the item at `segs` to a sibling name.
+    /// Non-admins can never rename an ownership anchor: the new name would hand
+    /// the memories to a different username (or to nobody).
+    pub fn can_rename(
+        username: &str,
+        is_admin: bool,
+        grants: &[(String, String)],
+        segs: &[String],
+    ) -> bool {
+        if is_admin {
+            return true;
+        }
+        if Self::is_ownership_anchor(segs) {
+            return false;
+        }
+        Self::access_for(username, is_admin, grants, segs) == Access::ReadWrite
+    }
+
+    /// Whether `username` may delete the item at `segs`. A non-admin may delete
+    /// their own space, but never another user's ownership anchor — even when
+    /// they hold a readwrite share on it.
+    pub fn can_delete(
+        username: &str,
+        is_admin: bool,
+        grants: &[(String, String)],
+        segs: &[String],
+    ) -> bool {
+        if is_admin {
+            return true;
+        }
+        if Self::is_ownership_anchor(segs) && segs[1] != username {
+            return false;
+        }
+        Self::access_for(username, is_admin, grants, segs) == Access::ReadWrite
+    }
+
+    /// Whether a non-admin may move the *source* item at `segs`. Relocating an
+    /// ownership anchor is admin-only — it carries a whole user's namespace.
+    pub fn can_move_source(is_admin: bool, segs: &[String]) -> bool {
+        is_admin || !Self::is_ownership_anchor(segs)
+    }
+
+    /// Whether `username` may have a moved/copied item *land* at `to`. The
+    /// destination may not be a bare project root, nor an ownership anchor for
+    /// any username other than your own — either would inject a foreign space.
+    pub fn can_place_at(username: &str, is_admin: bool, to: &[String]) -> bool {
+        if is_admin {
+            return true;
+        }
+        if to.len() < 2 {
+            return false;
+        }
+        if Self::is_ownership_anchor(to) && to[1] != username {
+            return false;
+        }
+        true
+    }
+
     /// Whether `segs` (or something under it) is visible to the user: own
     /// space, admin, a project the user has a space in, or a grant whose
     /// path is under OR above this path.
@@ -338,6 +413,79 @@ mod tests {
         assert_eq!(Store::access_for("bob", false, &grants, &other), Access::None);
         let rw = vec![("proj/alice/notes.md".to_string(), "readwrite".to_string())];
         assert_eq!(Store::access_for("bob", false, &rw, &file), Access::ReadWrite);
+    }
+
+    // ---- ownership-anchor policy (privacy-critical) -----------------------
+
+    fn segs(p: &str) -> Vec<String> {
+        clean_path(p).unwrap()
+    }
+
+    #[test]
+    fn anchor_is_depth_two() {
+        assert!(!Store::is_ownership_anchor(&segs("proj")));
+        assert!(Store::is_ownership_anchor(&segs("proj/alice")));
+        assert!(!Store::is_ownership_anchor(&segs("proj/alice/notes.md")));
+    }
+
+    #[test]
+    fn non_admin_cannot_rename_any_anchor() {
+        // Own anchor: renaming it would push alice's memories into another
+        // username's namespace — the core injection vector. Denied.
+        assert!(!Store::can_rename("alice", false, &[], &segs("proj/alice")));
+        // Someone else's anchor, no grant: denied.
+        assert!(!Store::can_rename("alice", false, &[], &segs("proj/bob")));
+        // Even a readwrite share on bob's space must not let alice rename the
+        // anchor (that would break bob's own-space access entirely).
+        let rw = vec![("proj/bob".to_string(), "readwrite".to_string())];
+        assert!(!Store::can_rename("alice", false, &rw, &segs("proj/bob")));
+        // Admins may reorganize anchors.
+        assert!(Store::can_rename("admin", true, &[], &segs("proj/alice")));
+    }
+
+    #[test]
+    fn non_admin_can_rename_within_own_space() {
+        // Files and subfolders inside your own space rename freely.
+        assert!(Store::can_rename("alice", false, &[], &segs("proj/alice/notes.md")));
+        assert!(Store::can_rename("alice", false, &[], &segs("proj/alice/sub")));
+        // But not inside someone else's space without write access.
+        assert!(!Store::can_rename("alice", false, &[], &segs("proj/bob/notes.md")));
+        let rw = vec![("proj/bob".to_string(), "readwrite".to_string())];
+        assert!(Store::can_rename("alice", false, &rw, &segs("proj/bob/notes.md")));
+    }
+
+    #[test]
+    fn delete_protects_other_users_anchor() {
+        // Deleting your own space is allowed.
+        assert!(Store::can_delete("alice", false, &[], &segs("proj/alice")));
+        // Deleting another user's anchor is denied, even with a readwrite share.
+        assert!(!Store::can_delete("alice", false, &[], &segs("proj/bob")));
+        let rw = vec![("proj/bob".to_string(), "readwrite".to_string())];
+        assert!(!Store::can_delete("alice", false, &rw, &segs("proj/bob")));
+        // A readwrite share still allows deleting files *inside* bob's space.
+        assert!(Store::can_delete("alice", false, &rw, &segs("proj/bob/notes.md")));
+        // Admin can delete anything.
+        assert!(Store::can_delete("admin", true, &[], &segs("proj/bob")));
+    }
+
+    #[test]
+    fn move_source_anchor_is_admin_only() {
+        assert!(!Store::can_move_source(false, &segs("proj/alice")));
+        assert!(Store::can_move_source(false, &segs("proj/alice/sub")));
+        assert!(Store::can_move_source(true, &segs("proj/alice")));
+    }
+
+    #[test]
+    fn place_cannot_forge_foreign_anchor() {
+        // Landing at a bare project root is not allowed for non-admins.
+        assert!(!Store::can_place_at("alice", false, &segs("proj")));
+        // Landing as another username's anchor injects a foreign space: denied.
+        assert!(!Store::can_place_at("alice", false, &segs("proj/bob")));
+        // Your own anchor, or anything deeper, is fine.
+        assert!(Store::can_place_at("alice", false, &segs("proj/alice")));
+        assert!(Store::can_place_at("alice", false, &segs("proj/alice/sub")));
+        // Admins may create anchors anywhere.
+        assert!(Store::can_place_at("admin", true, &segs("proj/bob")));
     }
 
     #[test]

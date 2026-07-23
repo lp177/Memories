@@ -903,8 +903,16 @@ async fn fs_delete(
         if segs.is_empty() || is_scriber(&state, &segs) {
             return Err(err(StatusCode::BAD_REQUEST, "This item cannot be deleted"));
         }
-        if Store::access_for(&a.user.username, a.user.is_admin, &g, &segs) != Access::ReadWrite {
-            return Err(err(StatusCode::FORBIDDEN, &format!("No write access to {p}")));
+        if !Store::can_delete(&a.user.username, a.user.is_admin, &g, &segs) {
+            let foreign_anchor = !a.user.is_admin
+                && Store::is_ownership_anchor(&segs)
+                && segs.get(1).is_some_and(|s| s != &a.user.username);
+            let msg = if foreign_anchor {
+                format!("Deleting another user's top-level folder is restricted to admins: {p}")
+            } else {
+                format!("No write access to {p}")
+            };
+            return Err(err(StatusCode::FORBIDDEN, &msg));
         }
         state
             .store
@@ -939,8 +947,13 @@ async fn fs_rename(
         return Err(err(StatusCode::BAD_REQUEST, "Invalid name"));
     }
     let g = grants(&state, &a);
-    if Store::access_for(&a.user.username, a.user.is_admin, &g, &segs) != Access::ReadWrite {
-        return Err(err(StatusCode::FORBIDDEN, "No write access to this path"));
+    if !Store::can_rename(&a.user.username, a.user.is_admin, &g, &segs) {
+        let msg = if !a.user.is_admin && Store::is_ownership_anchor(&segs) {
+            "Renaming a user's top-level folder is restricted to admins"
+        } else {
+            "No write access to this path"
+        };
+        return Err(err(StatusCode::FORBIDDEN, msg));
     }
     let mut to = segs.clone();
     *to.last_mut().unwrap() = new_name.to_string();
@@ -996,13 +1009,26 @@ async fn transfer(
         if !allowed {
             return Err(err(StatusCode::FORBIDDEN, &format!("No access to {p}")));
         }
+        // Relocating an ownership anchor (a whole user's namespace) is admin-only.
+        if move_items && !Store::can_move_source(a.user.is_admin, &segs) {
+            return Err(err(
+                StatusCode::FORBIDDEN,
+                &format!("Moving a user's top-level folder is restricted to admins: {p}"),
+            ));
+        }
         let mut to = dest.clone();
         to.push(segs.last().unwrap().clone());
-        // Moving into a project root would escape the per-user convention —
-        // only allow destinations at least one level deep (inside a project),
-        // except for admins who may reorganize projects.
-        if to.len() < 2 && !a.user.is_admin {
-            return Err(err(StatusCode::BAD_REQUEST, "Destination must be inside a project"));
+        // The destination must stay inside a project and may not forge an
+        // ownership anchor for another username — either would let a non-admin
+        // inject memory into someone else's space. Admins may reorganize freely.
+        if !Store::can_place_at(&a.user.username, a.user.is_admin, &to) {
+            if to.len() < 2 {
+                return Err(err(StatusCode::BAD_REQUEST, "Destination must be inside a project"));
+            }
+            return Err(err(
+                StatusCode::FORBIDDEN,
+                "You can only create a top-level folder in your own space",
+            ));
         }
         // No-op / cycle guards.
         let src_joined = segs.join("/");
