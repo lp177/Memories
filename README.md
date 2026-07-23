@@ -196,6 +196,32 @@ changes its API shapes — or our client drifts — these tests fail first.
   **API tokens** (create with read or read & write scope, see last-used
   time, revoke instantly).
 
+## Secrets via Infisical (optional)
+
+In production the secrets (`WEB_SECRET`, `ADMIN_PASSWORD`, `SCRIBER_TOKEN`,
+SMTP credentials) don't have to live in the `.env` file: the container
+entrypoint can fetch them from an [Infisical](https://infisical.com) instance
+at startup with a **Universal Auth machine identity** and inject them via
+`infisical run`.
+
+1. In Infisical: create a project (e.g. `memories`), add the secrets to an
+   environment (e.g. `prod`), create a **machine identity** with Universal
+   Auth and grant it read access to that project.
+2. Keep only the identity + non-secret config in the env file:
+
+   ```ini
+   INFISICAL_API_URL=https://your-infisical-host/api
+   INFISICAL_CLIENT_ID=<machine identity client id>
+   INFISICAL_CLIENT_SECRET=<machine identity client secret>
+   INFISICAL_PROJECT_ID=<project id>
+   INFISICAL_ENV=prod
+   ```
+
+3. Restart the container. The entrypoint logs
+   `fetching secrets from Infisical` and starts the app with the injected
+   environment. When the `INFISICAL_*` values are absent it falls back to the
+   plain environment, so development setups keep working unchanged.
+
 ## Environment reference
 
 | Key | Default | Purpose |
