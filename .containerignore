@@ -1,0 +1,10 @@
+# Keep the build context small — everything the Dockerfile needs is
+# backend/{Cargo.toml,Cargo.lock,src,entrypoint.sh} and frontend/{package*.json,src,…}.
+# Without this the 2 GB backend/target and the runtime data/ get shipped to the
+# build daemon on every `podman build`.
+data
+.env
+**/node_modules
+**/target
+**/dist
+**/.git
