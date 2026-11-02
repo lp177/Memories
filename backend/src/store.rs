@@ -197,6 +197,38 @@ impl Store {
     /// Whether `segs` (or something under it) is visible to the user: own
     /// space, admin, a project the user has a space in, or a grant whose
     /// path is under OR above this path.
+    /// Access to a path of an externally mounted project (the scriber
+    /// mount): admins, or a share on the path or one of its parents. Unlike a
+    /// stored project there is no own-space rule (a mounted folder name could
+    /// equal a username) and nothing is visible by default — the mount holds
+    /// the minutes of private meetings.
+    pub fn mount_access(is_admin: bool, grants: &[(String, String)], segs: &[String]) -> Access {
+        if is_admin {
+            return Access::ReadWrite;
+        }
+        let joined = segs.join("/");
+        let mut best = Access::None;
+        for (path, perm) in grants {
+            if joined == *path || joined.starts_with(&format!("{path}/")) {
+                if perm == "readwrite" {
+                    return Access::ReadWrite;
+                }
+                best = Access::Read;
+            }
+        }
+        best
+    }
+
+    /// Whether a mounted path may be listed: accessible itself, or a parent
+    /// of a shared path (listing then shows only the reachable entries).
+    pub fn mount_visible(is_admin: bool, grants: &[(String, String)], segs: &[String]) -> bool {
+        if Self::mount_access(is_admin, grants, segs) != Access::None {
+            return true;
+        }
+        let joined = segs.join("/");
+        grants.iter().any(|(path, _)| path.starts_with(&format!("{joined}/")))
+    }
+
     pub fn visible(
         &self,
         username: &str,
@@ -360,6 +392,24 @@ fn copy_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mount_access_needs_admin_or_share() {
+        let p = |s: &str| clean_path(s).unwrap();
+        let none: Vec<(String, String)> = vec![];
+        // No share: nothing, not even a folder named after the user.
+        assert_eq!(Store::mount_access(false, &none, &p("scriber/alice")), Access::None);
+        assert_eq!(Store::mount_access(false, &none, &p("scriber/meetings/x.md")), Access::None);
+        assert!(!Store::mount_visible(false, &none, &p("scriber")));
+        assert_eq!(Store::mount_access(true, &none, &p("scriber/meetings/x.md")), Access::ReadWrite);
+        let g = vec![("scriber/meetings".to_string(), "read".to_string())];
+        assert_eq!(Store::mount_access(false, &g, &p("scriber/meetings/x.md")), Access::Read);
+        assert_eq!(Store::mount_access(false, &g, &p("scriber/Bob (1)/memory.md")), Access::None);
+        assert!(Store::mount_visible(false, &g, &p("scriber")));
+        assert!(!Store::mount_visible(false, &g, &p("scriber/Bob (1)")));
+        // "scriber/meetingsX" must not match a share on "scriber/meetings".
+        assert_eq!(Store::mount_access(false, &g, &p("scriber/meetingsX")), Access::None);
+    }
 
     #[test]
     fn entries_sort_folders_first_then_ascii() {

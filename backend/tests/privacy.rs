@@ -12,7 +12,10 @@
 //!   * a non-admin forging a foreign anchor via move/copy into a shared project;
 //!   * a group grant leaking write (it must give visibility, not control);
 //!   * reading memories one is not entitled to, path traversal, admin-only
-//!     endpoints, token scopes and unauthenticated access.
+//!     endpoints, token scopes and unauthenticated access;
+//!   * reaching the scriber mount (private meeting minutes, participant
+//!     memories) without being an admin or holding a share inside it, or
+//!     writing through it while it is read-only.
 //!
 //! Each test drives the *real* `api::router` over HTTP via reqwest, so it
 //! exercises authentication, the handlers and the store together — the exact
@@ -26,6 +29,7 @@ use memories::auth;
 use memories::config::Config;
 use memories::db::{Db, User};
 use memories::events::EventHub;
+use memories::scriber::ScriberClient;
 use memories::store::{clean_path, Store};
 
 const SECRET: &str = "privacy-test-secret";
@@ -61,6 +65,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         scriber_url: None,
         scriber_token: None,
         scriber_mount: "scriber".into(),
+        scriber_writable: false,
     }
 }
 
@@ -69,6 +74,17 @@ fn seg(p: &str) -> Vec<String> {
 }
 
 async fn spawn() -> World {
+    spawn_with(None, false).await
+}
+
+/// A world with the scriber mount configured. The upstream address is dead on
+/// purpose: an access check must refuse BEFORE any upstream call (403), while
+/// an allowed request gets past it and fails upstream (502/404).
+async fn spawn_mounted(writable: bool) -> World {
+    spawn_with(Some(ScriberClient::new("http://127.0.0.1:9", "unused")), writable).await
+}
+
+async fn spawn_with(scriber: Option<ScriberClient>, writable: bool) -> World {
     let tmp = tempfile::tempdir().unwrap();
     let db = Db::open(&tmp.path().join("memories.db")).unwrap();
     let hash = auth::hash_password("password123");
@@ -86,12 +102,14 @@ async fn spawn() -> World {
     store.write_file(&seg("proj/alice/notes.md"), "alice private").unwrap();
     store.write_file(&seg("proj/bob/secret.md"), "bob private").unwrap();
 
+    let mut cfg = test_config(tmp.path());
+    cfg.scriber_writable = writable;
     let state = Arc::new(AppState {
-        cfg: test_config(tmp.path()),
+        cfg,
         db,
         store,
         hub: EventHub::new(),
-        scriber: None,
+        scriber,
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -459,4 +477,70 @@ async fn unauthenticated_requests_are_rejected() {
     assert_eq!(r.status(), 401);
     let r = http().get(format!("{}/api/fs/list", w.base)).bearer_auth("garbage").send().await.unwrap();
     assert_eq!(r.status(), 401);
+}
+
+// ===========================================================================
+// Scriber mount: admins and explicit shares only, read-only by default
+// ===========================================================================
+
+const MEETING: &str = "scriber/meetings/2026-10-01 board (m-1).md";
+const MEMORY: &str = "scriber/Bob (222)/memory.md";
+
+async fn root_names(w: &World, tok: &str) -> Vec<String> {
+    let body: serde_json::Value = get(w, tok, "/api/fs/list?path=").await.json().await.unwrap();
+    body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn scriber_mount_is_hidden_from_non_admins() {
+    let w = spawn_mounted(false).await;
+    assert!(root_names(&w, &w.admin).await.contains(&"scriber".to_string()));
+    for tok in [&w.alice, &w.dave] {
+        assert!(!root_names(&w, tok).await.contains(&"scriber".to_string()));
+        assert_eq!(get(&w, tok, "/api/fs/list?path=scriber").await.status(), 403);
+        assert_eq!(read_file(&w, tok, MEETING).await.status(), 403);
+        assert_eq!(read_file(&w, tok, MEMORY).await.status(), 403);
+        assert_eq!(write_file(&w, tok, MEMORY, "poisoned").await.status(), 403);
+        assert_eq!(get(&w, tok, "/api/events?project=scriber").await.status(), 403);
+    }
+    // The admin gets past the check (then fails on the dead upstream).
+    assert_ne!(read_file(&w, &w.admin, MEETING).await.status(), 403);
+}
+
+#[tokio::test]
+async fn scriber_mount_is_read_only_unless_enabled() {
+    let w = spawn_mounted(false).await;
+    let resp = write_file(&w, &w.admin, MEMORY, "edited").await;
+    assert_eq!(resp.status(), 403);
+    assert!(resp.text().await.unwrap().contains("read-only"));
+    let w = spawn_mounted(true).await;
+    assert_ne!(write_file(&w, &w.admin, MEMORY, "edited").await.status(), 403);
+}
+
+#[tokio::test]
+async fn scriber_share_opens_only_the_shared_part() {
+    let w = spawn_mounted(true).await;
+    // Only an admin may share inside the mount.
+    let share = serde_json::json!({
+        "path": "scriber/meetings", "grantee_type": "user",
+        "grantee_id": w.alice_id, "permission": "read",
+    });
+    assert_eq!(post(&w, &w.bob, "/api/shares", share.clone()).await.status(), 403);
+    assert_eq!(post(&w, &w.admin, "/api/shares", share).await.status(), 200);
+
+    assert!(root_names(&w, &w.alice).await.contains(&"scriber".to_string()));
+    assert_ne!(read_file(&w, &w.alice, MEETING).await.status(), 403);
+    // Read share: no write, and nothing outside the shared folder.
+    assert_eq!(write_file(&w, &w.alice, MEETING, "edited").await.status(), 403);
+    assert_eq!(read_file(&w, &w.alice, MEMORY).await.status(), 403);
+    // A non-admin grantee cannot see or touch the mount's shares.
+    assert_eq!(get(&w, &w.alice, "/api/shares?path=scriber/meetings").await.status(), 403);
+    // Others still see nothing.
+    assert!(!root_names(&w, &w.dave).await.contains(&"scriber".to_string()));
+    assert_eq!(read_file(&w, &w.dave, MEETING).await.status(), 403);
 }

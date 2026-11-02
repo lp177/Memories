@@ -699,6 +699,88 @@ fn is_scriber(state: &AppState, segs: &[String]) -> bool {
     state.scriber.is_some() && !segs.is_empty() && segs[0] == state.cfg.scriber_mount
 }
 
+/// Effective access on a path of the scriber mount: admins or shares only
+/// (`Store::mount_access`), capped to read when the mount is read-only
+/// (`SCRIBER_WRITABLE` off, the default) or the API token is read-only.
+pub(crate) fn scriber_access(
+    state: &AppState,
+    a: &Authed,
+    g: &[(String, String)],
+    segs: &[String],
+) -> Access {
+    match Store::mount_access(a.user.is_admin, g, segs) {
+        Access::ReadWrite if !state.cfg.scriber_writable || !a.can_write() => Access::Read,
+        access => access,
+    }
+}
+
+/// Whether the caller may see the scriber mount at all (root listing).
+pub(crate) fn scriber_visible(state: &AppState, a: &Authed, g: &[(String, String)]) -> bool {
+    state.scriber.is_some()
+        && Store::mount_visible(a.user.is_admin, g, &[state.cfg.scriber_mount.clone()])
+}
+
+/// The root-listing entry of the scriber mount, for a caller who may see it.
+pub(crate) fn scriber_root_entry(state: &AppState, a: &Authed, g: &[(String, String)]) -> Entry {
+    let mount = state.cfg.scriber_mount.clone();
+    Entry {
+        access: access_label(scriber_access(state, a, g, &[mount.clone()])).into(),
+        name: mount.clone(),
+        path: mount,
+        is_dir: true,
+        size: 0,
+        modified_at: None,
+        shared: false,
+    }
+}
+
+fn access_label(access: Access) -> &'static str {
+    match access {
+        Access::ReadWrite => "readwrite",
+        Access::Read => "read",
+        // Parent of a shared path: listable, nothing else.
+        Access::None => "read",
+    }
+}
+
+/// List a folder of the scriber mount, keeping only the entries the caller
+/// may reach, each labelled with the caller's own access. The caller must
+/// have checked `Store::mount_visible` on `segs` first.
+pub(crate) async fn scriber_entries(
+    state: &AppState,
+    a: &Authed,
+    g: &[(String, String)],
+    segs: &[String],
+) -> Result<Option<Vec<Entry>>, String> {
+    let client = state.scriber.as_ref().expect("scriber mount configured");
+    let Some(entries) = client.mount_entries(segs, "read").await.map_err(|e| format!("scriber: {e}"))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        entries
+            .into_iter()
+            .filter_map(|mut e| {
+                let path = clean_path(&e.path)?;
+                if !Store::mount_visible(a.user.is_admin, g, &path) {
+                    return None;
+                }
+                e.access = access_label(scriber_access(state, a, g, &path)).into();
+                Some(e)
+            })
+            .collect(),
+    ))
+}
+
+/// Error for a write on the scriber mount the caller may not make.
+pub(crate) fn scriber_write_denied(state: &AppState) -> &'static str {
+    if state.cfg.scriber_writable {
+        "No write access to this path"
+    } else {
+        "The scriber mount is read-only"
+    }
+}
+
 async fn fs_list(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -708,10 +790,15 @@ async fn fs_list(
     let segs = parse_path(&q.path)?;
     let g = grants(&state, &a);
 
-    // Virtual scriber project.
+    // Virtual scriber project: admins and explicit shares only.
     if is_scriber(&state, &segs) {
-        let client = state.scriber.as_ref().unwrap();
-        let entries = scriber_list(client, &segs, &a).await?;
+        if !Store::mount_visible(a.user.is_admin, &g, &segs) {
+            return Err(err(StatusCode::FORBIDDEN, "No access to this path"));
+        }
+        let entries = scriber_entries(&state, &a, &g, &segs)
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, &e))?
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "Not found"))?;
         return Ok(Json(json!({ "path": segs.join("/"), "entries": entries })));
     }
 
@@ -723,36 +810,13 @@ async fn fs_list(
         .list(&segs, &a.user.username, a.user.is_admin, &g, &state.db)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
 
-    // At root, expose the virtual scriber project to every signed-in user.
-    if segs.is_empty() {
-        if let Some(client) = &state.scriber {
-            entries.push(Entry {
-                name: state.cfg.scriber_mount.clone(),
-                path: state.cfg.scriber_mount.clone(),
-                is_dir: true,
-                size: 0,
-                modified_at: None,
-                access: if a.can_write() { "readwrite" } else { "read" }.into(),
-                shared: false,
-            });
-            let _ = client; // client used above for presence only
-            sort_entries(&mut entries);
-        }
+    // At root, show the virtual scriber project to admins and to users with
+    // a share inside it — never to everyone: it holds private meetings.
+    if segs.is_empty() && scriber_visible(&state, &a, &g) {
+        entries.push(scriber_root_entry(&state, &a, &g));
+        sort_entries(&mut entries);
     }
     Ok(Json(json!({ "path": segs.join("/"), "entries": entries })))
-}
-
-async fn scriber_list(
-    client: &ScriberClient,
-    segs: &[String],
-    a: &Authed,
-) -> Result<Vec<Entry>, ApiError> {
-    let access = if a.can_write() { "readwrite" } else { "read" };
-    client
-        .mount_entries(segs, access)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("scriber: {e}")))?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Not found"))
 }
 
 async fn fs_read(
@@ -766,6 +830,10 @@ async fn fs_read(
         return Err(err(StatusCode::BAD_REQUEST, "Missing path"));
     }
     if is_scriber(&state, &segs) {
+        let g = grants(&state, &a);
+        if scriber_access(&state, &a, &g, &segs) == Access::None {
+            return Err(err(StatusCode::FORBIDDEN, "No access to this path"));
+        }
         let file = ScriberClient::classify_file(&segs)
             .ok_or_else(|| err(StatusCode::NOT_FOUND, "Not found"))?;
         let content = state
@@ -809,6 +877,10 @@ async fn fs_write(
         return Err(err(StatusCode::BAD_REQUEST, "Files live inside a project"));
     }
     if is_scriber(&state, &segs) {
+        let g = grants(&state, &a);
+        if scriber_access(&state, &a, &g, &segs) != Access::ReadWrite {
+            return Err(err(StatusCode::FORBIDDEN, scriber_write_denied(&state)));
+        }
         let file = ScriberClient::classify_file(&segs).ok_or_else(|| {
             err(
                 StatusCode::BAD_REQUEST,
@@ -1102,7 +1174,12 @@ async fn shares_list(
     let a = require(&state, &headers, None)?;
     let segs = parse_path(&q.path)?;
     let g = grants(&state, &a);
-    if Store::access_for(&a.user.username, a.user.is_admin, &g, &segs) == Access::None {
+    let allowed = if is_scriber(&state, &segs) {
+        a.user.is_admin
+    } else {
+        Store::access_for(&a.user.username, a.user.is_admin, &g, &segs) != Access::None
+    };
+    if !allowed {
         return Err(err(StatusCode::FORBIDDEN, "No access to this path"));
     }
     Ok(Json(json!({ "shares": state.db.shares_for_path(&segs.join("/")) })))
@@ -1124,8 +1201,13 @@ async fn shares_create(
     let a = require(&state, &headers, None)?;
     require_write_scope(&a)?;
     let segs = parse_path(&body.path)?;
-    if segs.is_empty() || is_scriber(&state, &segs) {
+    if segs.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "This item cannot be shared"));
+    }
+    // The scriber mount (private meeting minutes, participant memories) is
+    // reachable only by admins and the users or groups they share it with.
+    if is_scriber(&state, &segs) && !a.user.is_admin {
+        return Err(err(StatusCode::FORBIDDEN, "Only admins can share the scriber mount"));
     }
     if !matches!(body.grantee_type.as_str(), "user" | "group") {
         return Err(err(StatusCode::BAD_REQUEST, "grantee_type must be user or group"));
@@ -1166,7 +1248,12 @@ async fn shares_delete(
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "Share not found"))?;
     let segs = parse_path(&share.path)?;
     let g = grants(&state, &a);
-    if Store::access_for(&a.user.username, a.user.is_admin, &g, &segs) != Access::ReadWrite {
+    let allowed = if is_scriber(&state, &segs) {
+        a.user.is_admin
+    } else {
+        Store::access_for(&a.user.username, a.user.is_admin, &g, &segs) == Access::ReadWrite
+    };
+    if !allowed {
         return Err(err(StatusCode::FORBIDDEN, "No write access to this path"));
     }
     state.db.delete_share(&id);
@@ -1197,7 +1284,11 @@ async fn events_poll(
         return Err(err(StatusCode::BAD_REQUEST, "project must be a top-level name"));
     }
     let g = grants(&state, &a);
-    if !state.store.visible(&a.user.username, a.user.is_admin, &g, &segs) && !is_scriber(&state, &segs) {
+    if !(if is_scriber(&state, &segs) {
+        Store::mount_visible(a.user.is_admin, &g, &segs)
+    } else {
+        state.store.visible(&a.user.username, a.user.is_admin, &g, &segs)
+    }) {
         return Err(err(StatusCode::FORBIDDEN, "No access to this project"));
     }
     let events = state.db.events_since(&segs[0], q.since, 500);
@@ -1216,7 +1307,11 @@ async fn events_stream(
         return Err(err(StatusCode::BAD_REQUEST, "project must be a top-level name"));
     }
     let g = grants(&state, &a);
-    if !state.store.visible(&a.user.username, a.user.is_admin, &g, &segs) && !is_scriber(&state, &segs) {
+    if !(if is_scriber(&state, &segs) {
+        Store::mount_visible(a.user.is_admin, &g, &segs)
+    } else {
+        state.store.visible(&a.user.username, a.user.is_admin, &g, &segs)
+    }) {
         return Err(err(StatusCode::FORBIDDEN, "No access to this project"));
     }
     let project = segs[0].clone();

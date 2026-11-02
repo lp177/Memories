@@ -178,15 +178,25 @@ Memories can **mount an external memory source as a virtual project**. The
 built-in provider mounts a [Scriber](https://github.com/lp177/Scriber)
 instance: each meeting participant appears as a folder holding `memory.md`,
 and a `meetings` folder holds one Markdown file per summarized meeting (the
-AI-generated minutes) — all readable and writable from the explorer, API and
-MCP.
+AI-generated minutes) — readable from the explorer, API and MCP.
 
 ```ini
 # .env
 SCRIBER_URL=https://scriber.example.com
-SCRIBER_TOKEN=<scriber API token — created in Scriber Settings, readwrite>
+SCRIBER_TOKEN=<scriber API token — created in Scriber Settings, read scope>
 SCRIBER_MOUNT=scriber
+# Optional: allow writing memory.md / minutes through the mount (the Scriber
+# token then needs the readwrite scope). Off by default.
+SCRIBER_WRITABLE=false
 ```
+
+**Access.** The mount holds the minutes of private meetings and what each
+participant's memory knows, so it is **not** visible to every signed-in user:
+only admins see it, plus the users or groups an admin shares a path inside it
+with (e.g. `scriber/meetings` read-only). There is no "own space" in the mount
+and only admins can share or unshare its paths. It is **read-only** unless
+`SCRIBER_WRITABLE=true`; even then a read-only API token or a read share only
+reads. `backend/tests/privacy.rs` pins these rules.
 
 ### The provider contract
 
@@ -274,6 +284,7 @@ at startup with a **Universal Auth machine identity** and inject them via
 | `INFISICAL_API_URL/CLIENT_ID/CLIENT_SECRET/PROJECT_ID/ENV/SECRET_PATH` | *(unset)* | fetch secrets from Infisical at start (see above) |
 | `SMTP_HOST/PORT/USERNAME/PASSWORD/FROM` | *(unset)* | reset-mail delivery (optional) |
 | `SCRIBER_URL` / `SCRIBER_TOKEN` / `SCRIBER_MOUNT` | *(unset)* / `scriber` | external Scriber provider |
+| `SCRIBER_WRITABLE` | `false` | allow writes through the Scriber mount (admins / readwrite shares only) |
 
 ## License
 

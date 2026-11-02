@@ -154,12 +154,11 @@ async fn call_tool(
             let path = if name == "list_projects" { String::new() } else { arg_str("path") };
             let segs = parse(&path)?;
             let entries = if scriber_path(state, &segs) {
-                let client = state.scriber.as_ref().unwrap();
-                let access = if a.can_write() { "readwrite" } else { "read" };
-                client
-                    .mount_entries(&segs, access)
-                    .await
-                    .map_err(|e| format!("scriber: {e}"))?
+                if !Store::mount_visible(a.user.is_admin, &g, &segs) {
+                    return Err("No access to this path".into());
+                }
+                crate::api::scriber_entries(state, a, &g, &segs)
+                    .await?
                     .ok_or_else(|| "Not found".to_string())?
             } else {
                 if !state.store.visible(&a.user.username, a.user.is_admin, &g, &segs) {
@@ -169,16 +168,8 @@ async fn call_tool(
                     .store
                     .list(&segs, &a.user.username, a.user.is_admin, &g, &state.db)
                     .map_err(|e| e.to_string())?;
-                if segs.is_empty() && state.scriber.is_some() {
-                    list.push(crate::store::Entry {
-                        name: state.cfg.scriber_mount.clone(),
-                        path: state.cfg.scriber_mount.clone(),
-                        is_dir: true,
-                        size: 0,
-                        modified_at: None,
-                        access: if a.can_write() { "readwrite" } else { "read" }.into(),
-                        shared: false,
-                    });
+                if segs.is_empty() && crate::api::scriber_visible(state, a, &g) {
+                    list.push(crate::api::scriber_root_entry(state, a, &g));
                     crate::store::sort_entries(&mut list);
                 }
                 list
@@ -188,6 +179,9 @@ async fn call_tool(
         "read_memory" => {
             let segs = parse(&arg_str("path"))?;
             if scriber_path(state, &segs) {
+                if crate::api::scriber_access(state, a, &g, &segs) == Access::None {
+                    return Err("No access to this path".into());
+                }
                 let file = ScriberClient::classify_file(&segs)
                     .ok_or_else(|| mount_path_hint(&state.cfg.scriber_mount))?;
                 let content = state
@@ -216,6 +210,9 @@ async fn call_tool(
             let segs = parse(&arg_str("path"))?;
             let content = arg_str("content");
             if scriber_path(state, &segs) {
+                if crate::api::scriber_access(state, a, &g, &segs) != Access::ReadWrite {
+                    return Err(crate::api::scriber_write_denied(state).into());
+                }
                 let file = ScriberClient::classify_file(&segs)
                     .ok_or_else(|| mount_path_hint(&state.cfg.scriber_mount))?;
                 state
@@ -334,9 +331,12 @@ async fn call_tool(
             if segs.len() != 1 {
                 return Err("project must be a top-level name".into());
             }
-            if !state.store.visible(&a.user.username, a.user.is_admin, &g, &segs)
-                && !scriber_path(state, &segs)
-            {
+            let visible = if scriber_path(state, &segs) {
+                Store::mount_visible(a.user.is_admin, &g, &segs)
+            } else {
+                state.store.visible(&a.user.username, a.user.is_admin, &g, &segs)
+            };
+            if !visible {
                 return Err("No access to this project".into());
             }
             let events = state.db.events_since(&segs[0], since, 200);

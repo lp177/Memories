@@ -29,6 +29,10 @@ pub struct Config {
     pub scriber_url: Option<String>,
     pub scriber_token: Option<String>,
     pub scriber_mount: String,
+    /// Allow writes (memory.md, meeting minutes) through the scriber mount.
+    /// Off by default: the mount is read-only unless SCRIBER_WRITABLE=true
+    /// (the Scriber token must then have the readwrite scope too).
+    pub scriber_writable: bool,
 }
 
 fn var(key: &str, default: &str) -> String {
@@ -66,6 +70,10 @@ impl Config {
             scriber_url: var_opt("SCRIBER_URL"),
             scriber_token: var_opt("SCRIBER_TOKEN"),
             scriber_mount: var("SCRIBER_MOUNT", "scriber"),
+            scriber_writable: matches!(
+                var("SCRIBER_WRITABLE", "false").to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
         }
     }
 }
