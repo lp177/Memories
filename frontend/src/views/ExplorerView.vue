@@ -23,6 +23,7 @@ import {
 } from "../api.js";
 import { renderMarkdown } from "../markdown.js";
 import { modalBackdropClose, modalPress } from "../modal.js";
+import { confirmDelete } from "../prefs.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -375,7 +376,7 @@ async function deleteSelection(paths) {
   const list = paths || [...selected.value];
   if (!list.length) return;
   const label = list.length === 1 ? `"${list[0].split("/").pop()}"` : `${list.length} items`;
-  if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+  if (confirmDelete.value && !window.confirm(`Delete ${label}? This cannot be undone.`)) return;
   showToast(`Deleting ${label}…`, "pending");
   const minShown = sleep(PENDING_TOAST_MIN_MS);
   try {

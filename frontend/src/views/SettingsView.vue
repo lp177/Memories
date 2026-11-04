@@ -13,6 +13,7 @@ import {
   updateMe,
   uploadAvatar,
 } from "../api.js";
+import { confirmDelete } from "../prefs.js";
 
 const me = ref(null);
 const avatarObjUrl = ref("");
@@ -173,6 +174,17 @@ onMounted(load);
         <input id="p-mail" v-model="emailDraft" type="email" />
       </div>
       <button type="button" class="btn primary" @click="saveProfile">Save profile</button>
+    </section>
+
+    <section class="panel">
+      <h2>Explorer</h2>
+      <label class="switch-row">
+        <input v-model="confirmDelete" type="checkbox" role="switch" class="switch" aria-describedby="confirm-delete-hint" />
+        <span>Ask for confirmation before deleting files and folders</span>
+      </label>
+      <p id="confirm-delete-hint" class="field-hint">
+        When off, Delete removes the selection at once — it cannot be undone. Saved in this browser only.
+      </p>
     </section>
 
     <section class="panel">

@@ -282,6 +282,56 @@ code {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---------- Switch (Material toggle on a native checkbox) ---------- */
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  font-weight: 400;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+.switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 36px;
+  height: 14px;
+  margin: 3px 0;
+  border-radius: 7px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+.switch::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: var(--elev-1), 0 0 0 0 transparent;
+  transform: translateY(-50%);
+  transition: transform 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+.switch:checked { background: color-mix(in srgb, var(--primary) 45%, transparent); border-color: transparent; }
+.switch:checked::before { background: var(--primary); transform: translate(18px, -50%); }
+/* Material state layer around the thumb. */
+.switch:hover:not(:disabled)::before { box-shadow: var(--elev-1), 0 0 0 10px rgba(255, 255, 255, 0.06); }
+.switch:checked:hover:not(:disabled)::before {
+  box-shadow: var(--elev-1), 0 0 0 10px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+.switch:active:not(:disabled)::before { box-shadow: var(--elev-1), 0 0 0 10px rgba(255, 255, 255, 0.12); }
+.switch:focus-visible { outline: 2px solid var(--primary); outline-offset: 6px; }
+.switch:disabled { opacity: 0.4; cursor: not-allowed; }
+.switch-row:has(.switch:disabled) { cursor: not-allowed; color: var(--text-muted); }
+
 /* ---------- Forms — Material filled fields ---------- */
 
 label {
