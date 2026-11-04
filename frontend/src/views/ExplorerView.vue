@@ -510,6 +510,12 @@ function renameItem(entry) {
   promptName("Rename", entry.name, (v) => fsRename(entry.path, v));
 }
 
+// Read the entry before closing the menu: closeMenu() nulls `menu`.
+function deleteItem(entry) {
+  closeMenu();
+  deleteSelection([entry.path]);
+}
+
 // Markdown editor. `mode` is "preview" (rendered, read-only) or "raw" (the
 // editable textarea); preview is the default because it is far more readable.
 const editor = ref(null); // { path, name, content, saving, mode }
@@ -776,7 +782,7 @@ onBeforeUnmount(() => {
     <div v-if="menu" class="ctx-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }" @click.stop>
       <button type="button" @click="openShare(menu.entry)">🔗 Share…</button>
       <button type="button" @click="renameItem(menu.entry)">✏️ Rename…</button>
-      <button type="button" class="danger" @click="closeMenu(); deleteSelection([menu.entry.path])">🗑 Delete</button>
+      <button type="button" class="danger" @click="deleteItem(menu.entry)">🗑 Delete</button>
     </div>
 
     <!-- Name dialog (new folder / file / rename) -->
