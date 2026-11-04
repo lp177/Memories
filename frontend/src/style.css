@@ -269,6 +269,18 @@ code {
 }
 .toast.success { color: var(--green); }
 .toast.error { color: var(--red); }
+.toast.pending { color: var(--text); display: flex; align-items: center; gap: 10px; }
+
+.spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--blue-bg);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- Forms — Material filled fields ---------- */
 
@@ -664,4 +676,6 @@ dialog.mdl::backdrop { background: rgba(8, 6, 14, 0.7); backdrop-filter: blur(2p
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+  /* A 0.01ms infinite spin would flicker: show a still ring instead. */
+  .spinner { animation: none !important; }
 }

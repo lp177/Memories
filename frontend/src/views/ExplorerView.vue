@@ -44,11 +44,17 @@ let prevDepth = 0;
 
 const toast = ref(null);
 let toastTimer = null;
+// kind "pending" shows a spinner and stays up until the next showToast().
 function showToast(message, kind) {
   toast.value = { message, kind };
   if (toastTimer) window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => (toast.value = null), 3200);
+  toastTimer = kind === "pending" ? null : window.setTimeout(() => (toast.value = null), 3200);
 }
+
+// Minimum time a pending toast stays visible, so it can be read even when the
+// server answers instantly.
+const PENDING_TOAST_MIN_MS = 1500;
+const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 async function load({ autoDescend = false } = {}) {
   loading.value = true;
@@ -370,14 +376,19 @@ async function deleteSelection(paths) {
   if (!list.length) return;
   const label = list.length === 1 ? `"${list[0].split("/").pop()}"` : `${list.length} items`;
   if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+  showToast(`Deleting ${label}…`, "pending");
+  const minShown = sleep(PENDING_TOAST_MIN_MS);
   try {
     await fsDelete(list);
-    clearSelection();
-    await load();
-    showToast("Deleted.", "success");
   } catch (e) {
+    await minShown;
     showToast((e && e.message) || "Delete failed.", "error");
+    return;
   }
+  clearSelection();
+  load();
+  await minShown;
+  showToast("Deleted.", "success");
 }
 
 function onKeydown(event) {
@@ -878,6 +889,8 @@ onBeforeUnmount(() => {
       </div>
     </dialog>
 
-    <div v-if="toast" class="toast" :class="toast.kind" role="status">{{ toast.message }}</div>
+    <div v-if="toast" class="toast" :class="toast.kind" role="status" :aria-busy="toast.kind === 'pending'">
+      <span v-if="toast.kind === 'pending'" class="spinner" aria-hidden="true"></span>{{ toast.message }}
+    </div>
   </section>
 </template>
